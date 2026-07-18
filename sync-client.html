@@ -477,14 +477,14 @@
 
         renderAvatars();
 
-        window.addEventListener('DOMContentLoaded', () => {
-            if (sessionId && localStorage.getItem('ytm_web_session_id') === sessionId) {
-                // Auto-rejoin on refresh
-                document.getElementById('join-overlay').style.display = 'none';
-                document.getElementById('wait-overlay').style.display = 'flex';
-                connectToSession();
-            }
-        });
+        // Auto-rejoin on refresh (runs immediately since DOM is already parsed)
+        if (sessionId && localStorage.getItem('ytm_web_session_id') === sessionId) {
+            myName = localStorage.getItem('ytm_web_name') || myName;
+            selectedPfp = localStorage.getItem('ytm_web_pfp') || selectedPfp;
+            document.getElementById('join-overlay').style.display = 'none';
+            document.getElementById('wait-overlay').style.display = 'flex';
+            connectToSession();
+        }
 
         // Initialize Youtube Player
         function onYouTubeIframeAPIReady() {
@@ -546,17 +546,17 @@
             connectToSession();
         };
 
-        function connectToSession() {
+        function connectSSE() {
             if (eventSource) eventSource.close();
             
             eventSource = new EventSource(`https://ntfy.sh/ytmnative-sync-${sessionId}/sse`);
-            eventSource.onmessage = (event) => {
-                console.log("Raw SSE message received:", event.data);
+            eventSource.onmessage = (ev) => {
+                console.log("Raw SSE message received:", ev.data);
                 try {
-                    const msg = JSON.parse(event.data);
+                    const msg = JSON.parse(ev.data);
                     if (msg.message) {
                         const payload = JSON.parse(msg.message);
-                        console.log("Parsed payload payload:", payload);
+                        console.log("Parsed payload:", payload);
                         handleServerEvent(payload);
                     }
                 } catch (e) {
@@ -564,19 +564,24 @@
                 }
             };
 
-            eventSource.onerror = (err) => {
-                console.warn("SSE stream encountered connection error. Retrying in 3 seconds...", err);
-                eventSource.close();
-                setTimeout(() => {
-                    // Only auto-reconnect if we were already in an active session or request wait phase
-                    const isWaiting = document.getElementById('wait-overlay').style.display === 'flex';
-                    if (sessionActive || isWaiting) {
-                        connectToSession();
-                    }
-                }, 3000);
+            // Let EventSource handle its own reconnection.
+            // Only intervene if the connection is fully dead (readyState === CLOSED).
+            eventSource.onerror = () => {
+                if (eventSource.readyState === EventSource.CLOSED) {
+                    console.warn("SSE connection fully closed. Reconnecting in 3s...");
+                    setTimeout(() => {
+                        if (sessionActive || document.getElementById('wait-overlay').style.display === 'flex') {
+                            connectSSE();
+                        }
+                    }, 3000);
+                }
             };
+        }
 
-            // Send Join Request
+        function connectToSession() {
+            connectSSE();
+
+            // Send Join Request (only once per explicit join)
             publish({
                 type: 'JOIN_REQUEST',
                 guestId: myId,
@@ -684,8 +689,7 @@
                     updateGuestList(event);
                     break;
                     
-                case 'PROFILE_UPDATE':
-                    // Update profile updates in local roster cache
+                case 'PROFILE_UPDATE': {
                     const profileGuest = guestRoster.find(g => g.guestId === event.guestId);
                     if (profileGuest) {
                         profileGuest.name = event.name;
@@ -693,6 +697,7 @@
                         renderRosterBar();
                     }
                     break;
+                }
 
                 case 'ROLE_CHANGE':
                     if (event.targetGuestId === myId) {
