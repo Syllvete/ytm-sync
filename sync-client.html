@@ -333,6 +333,12 @@
                     <div style="font-size: 12px; color: #888; margin-top: 10px;">Please stand by...</div>
                 </div>
 
+                <div id="offline-overlay" class="overlay" style="display: none; background: rgba(9,9,9,0.9); z-index: 10;">
+                    <h2 style="color: #f43f5e; text-shadow: 0 0 10px rgba(244,63,94,0.3);">Host Offline</h2>
+                    <p>The host has disconnected or went offline.</p>
+                    <p style="font-size: 12px; color: #888; margin-top: 6px;">Waiting to re-establish connection...</p>
+                </div>
+
                 <div id="player-container" style="width:100%; height:100%;">
                     <div id="yt-player"></div>
                 </div>
@@ -341,7 +347,10 @@
 
         <div class="right-col card">
             <div class="chat-header">
-                <h3>Session Chat</h3>
+                <h3 style="display: flex; align-items: center; gap: 8px;">
+                    Session Chat
+                    <button id="edit-profile-btn" style="background:none; border:none; color:#aaa; cursor:pointer; font-size:12px; padding:0; display:none; line-height:1;" title="Edit Profile">⚙️</button>
+                </h3>
                 <span class="status-indicator" id="status-span">Disconnected</span>
             </div>
             <div class="roster-summary" id="roster-summary">
@@ -351,6 +360,8 @@
                 <div style="font-size:12px; color:#555; text-align:center; padding:20px 0;">Join the session to chat.</div>
             </div>
             <div class="chat-input-area">
+                <button class="btn" id="chat-img-btn" style="padding: 10px; background: rgba(255,255,255,0.05); border: 1px solid var(--border); font-size:14px; display:flex; align-items:center; justify-content:center; border-radius:8px;" title="Send Image" disabled>📷</button>
+                <input type="file" id="chat-img-input" style="display: none;" accept="image/*">
                 <input type="text" id="chat-input" class="input-text" placeholder="Type a message..." style="flex:1; text-align:left;" disabled>
                 <button class="btn" id="chat-send" style="padding: 10px 18px;" disabled>Send</button>
             </div>
@@ -387,6 +398,9 @@
         let lastHostIsPlaying = false;
         let hostVideoId = '';
         let role = 'Listener';
+        let lastHostActiveTime = Date.now();
+        let sessionActive = false;
+        let isEditingProfile = false;
 
         // Render avatar choices
         const grid = document.getElementById('avatar-grid');
@@ -491,6 +505,15 @@
         }
 
         // Connect/Join actions
+        document.getElementById('edit-profile-btn').onclick = () => {
+            isEditingProfile = true;
+            document.querySelector('#join-overlay h2').textContent = 'Edit Profile';
+            document.querySelector('#join-overlay p').textContent = 'Update your display name and avatar';
+            document.getElementById('join-btn').textContent = 'Save Changes';
+            document.getElementById('name-input').value = myName;
+            document.getElementById('join-overlay').style.display = 'flex';
+        };
+
         document.getElementById('join-btn').onclick = () => {
             if (!sessionId) {
                 alert('No session ID found in URL! Please copy a valid invite link.');
@@ -500,6 +523,23 @@
             localStorage.setItem('ytm_web_name', myName);
             localStorage.setItem('ytm_web_pfp', selectedPfp);
 
+            if (isEditingProfile) {
+                publish({
+                    type: 'PROFILE_UPDATE',
+                    guestId: myId,
+                    name: myName,
+                    pfp: selectedPfp
+                });
+                document.getElementById('join-overlay').style.display = 'none';
+                isEditingProfile = false;
+                
+                // Restore overlay titles
+                document.querySelector('#join-overlay h2').textContent = 'YTMNative Live Stream';
+                document.querySelector('#join-overlay p').textContent = 'Enter your display name to tune in';
+                document.getElementById('join-btn').textContent = 'Send Join Request';
+                return;
+            }
+
             document.getElementById('join-overlay').style.display = 'none';
             document.getElementById('wait-overlay').style.display = 'flex';
 
@@ -507,6 +547,8 @@
         };
 
         function connectToSession() {
+            if (eventSource) eventSource.close();
+            
             eventSource = new EventSource(`https://ntfy.sh/ytmnative-sync-${sessionId}/sse`);
             eventSource.onmessage = (event) => {
                 console.log("Raw SSE message received:", event.data);
@@ -520,6 +562,18 @@
                 } catch (e) {
                     console.error("SSE parse error:", e);
                 }
+            };
+
+            eventSource.onerror = (err) => {
+                console.warn("SSE stream encountered connection error. Retrying in 3 seconds...", err);
+                eventSource.close();
+                setTimeout(() => {
+                    // Only auto-reconnect if we were already in an active session or request wait phase
+                    const isWaiting = document.getElementById('wait-overlay').style.display === 'flex';
+                    if (sessionActive || isWaiting) {
+                        connectToSession();
+                    }
+                }, 3000);
             };
 
             // Send Join Request
@@ -540,9 +594,44 @@
 
         let isSyncing = false;
         let guestRoster = [];
+        let imageAssemblyBuffer = {};
+
+        function handleImageChunk(event) {
+            const { txId, index, total, chunk, senderId, senderName, senderPfp, songTimestamp } = event;
+            if (!imageAssemblyBuffer[txId]) {
+                imageAssemblyBuffer[txId] = new Array(total).fill(null);
+            }
+            imageAssemblyBuffer[txId][index] = chunk;
+            
+            // Check if all chunks received
+            const isComplete = imageAssemblyBuffer[txId].every(c => c !== null);
+            if (isComplete) {
+                const fullBase64 = imageAssemblyBuffer[txId].join('');
+                delete imageAssemblyBuffer[txId];
+                
+                const mockChatMsg = {
+                    type: 'CHAT',
+                    senderId: senderId,
+                    senderName: senderName,
+                    senderPfp: senderPfp,
+                    songTimestamp: songTimestamp,
+                    text: `__IMAGE__:${fullBase64}`
+                };
+                renderChatMessage(mockChatMsg);
+            }
+        }
 
         function handleServerEvent(event) {
             if (!event || !event.type) return;
+
+            // Reset host activity timer on receiving host communication
+            if (event.senderId === 'HOST' || event.role === 'Host' || event.type === 'JOIN_RESPONSE' || event.type === 'PLAYBACK_CMD') {
+                lastHostActiveTime = Date.now();
+                const offlineOverlay = document.getElementById('offline-overlay');
+                if (offlineOverlay && offlineOverlay.style.display !== 'none') {
+                    offlineOverlay.style.display = 'none';
+                }
+            }
 
             switch (event.type) {
                 case 'JOIN_RESPONSE':
@@ -553,8 +642,10 @@
                             document.getElementById('status-span').style.background = 'rgba(5, 150, 105, 0.1)';
                             document.getElementById('status-span').style.color = '#059669';
                             
+                            document.getElementById('edit-profile-btn').style.display = 'block';
                             document.getElementById('chat-input').disabled = false;
                             document.getElementById('chat-send').disabled = false;
+                            document.getElementById('chat-img-btn').disabled = false;
                             
                             // Initialize track sync
                             role = event.role || 'Listener';
@@ -576,6 +667,8 @@
                             
                             document.getElementById('chat-log').innerHTML = '<div style="font-size:11px;color:#059669;text-align:center;">Joined live session successfully!</div>';
                             localStorage.setItem('ytm_web_session_id', sessionId);
+                            sessionActive = true;
+                            lastHostActiveTime = Date.now();
                             
                             // Start heartbeat
                             sendHeartbeat();
@@ -589,6 +682,16 @@
                     
                 case 'HEARTBEAT':
                     updateGuestList(event);
+                    break;
+                    
+                case 'PROFILE_UPDATE':
+                    // Update profile updates in local roster cache
+                    const profileGuest = guestRoster.find(g => g.guestId === event.guestId);
+                    if (profileGuest) {
+                        profileGuest.name = event.name;
+                        profileGuest.pfp = event.pfp;
+                        renderRosterBar();
+                    }
                     break;
 
                 case 'ROLE_CHANGE':
@@ -615,6 +718,12 @@
                 case 'CHAT':
                     if (event.senderId !== myId) {
                         renderChatMessage(event);
+                    }
+                    break;
+                    
+                case 'CHAT_IMG_CHUNK':
+                    if (sessionActive && event.senderId !== myId) {
+                        handleImageChunk(event);
                     }
                     break;
             }
@@ -696,6 +805,94 @@
             input.value = '';
         }
 
+        // Image Attachment send handlers
+        const chatImgBtn = document.getElementById('chat-img-btn');
+        const chatImgInput = document.getElementById('chat-img-input');
+        chatImgBtn.onclick = () => {
+            chatImgInput.click();
+        };
+
+        chatImgInput.onchange = (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const img = new Image();
+                img.src = URL.createObjectURL(file);
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    let w = img.width;
+                    let h = img.height;
+                    const maxDim = 640;
+                    if (w > maxDim || h > maxDim) {
+                        if (w > h) {
+                            h = Math.round(h * maxDim / w);
+                            w = maxDim;
+                        } else {
+                            w = Math.round(w * maxDim / h);
+                            h = maxDim;
+                        }
+                    }
+                    canvas.width = w;
+                    canvas.height = h;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, w, h);
+                    
+                    const dataUrl = canvas.toDataURL('image/jpeg', 0.60);
+                    sendImageChunks(dataUrl);
+                };
+            }
+            chatImgInput.value = '';
+        };
+
+        function sendImageChunks(dataUrl) {
+            const txId = Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
+            const chunkSize = 3000;
+            const totalChunks = Math.ceil(dataUrl.length / chunkSize);
+            
+            console.log(`[Image Transfer] Sending ${dataUrl.length} chars in ${totalChunks} chunks (txId: ${txId})`);
+
+            let timeStr = '00:00';
+            const elapsed = (Date.now() - lastHostPositionTimestamp) / 1000;
+            const est = lastHostPosition + (lastHostIsPlaying ? elapsed : 0);
+            if (est > 0) {
+                const s = Math.floor(est);
+                const m = Math.floor(s / 60);
+                const r = s % 60;
+                timeStr = (m < 10 ? '0' + m : m) + ':' + (r < 10 ? '0' + r : r);
+            }
+            
+            for (let i = 0; i < totalChunks; i++) {
+                const start = i * chunkSize;
+                const end = start + chunkSize;
+                const chunkStr = dataUrl.substring(start, end);
+                
+                const chunkPayload = {
+                    type: 'CHAT_IMG_CHUNK',
+                    txId: txId,
+                    index: i,
+                    total: totalChunks,
+                    chunk: chunkStr,
+                    senderId: myId,
+                    senderName: myName,
+                    senderPfp: selectedPfp,
+                    songTimestamp: timeStr
+                };
+                
+                setTimeout(() => {
+                    publish(chunkPayload);
+                }, i * 75);
+            }
+            
+            const mockMsg = {
+                type: 'CHAT',
+                senderId: myId,
+                senderName: myName,
+                senderPfp: selectedPfp,
+                songTimestamp: timeStr,
+                text: `__IMAGE__:${dataUrl}`
+            };
+            renderChatMessage(mockMsg);
+        }
+
         function renderChatMessage(msg) {
             const isSelf = msg.senderId === myId;
             const log = document.getElementById('chat-log');
@@ -735,7 +932,23 @@
 
             const bubble = document.createElement('div');
             bubble.className = 'msg-bubble';
-            bubble.textContent = msg.text;
+            if (msg.text && msg.text.startsWith('__IMAGE__:')) {
+                const dataUrl = msg.text.substring(10);
+                const img = document.createElement('img');
+                img.src = dataUrl;
+                img.style.maxWidth = '200px';
+                img.style.maxHeight = '200px';
+                img.style.borderRadius = '6px';
+                img.style.display = 'block';
+                img.style.cursor = 'pointer';
+                img.onclick = () => {
+                    const w = window.open();
+                    w.document.write(`<img src="${dataUrl}" style="max-width:100%; height:auto;" />`);
+                };
+                bubble.appendChild(img);
+            } else {
+                bubble.textContent = msg.text;
+            }
 
             row.appendChild(header);
             row.appendChild(bubble);
@@ -855,6 +1068,24 @@
                 }
             }
         }, 500);
+
+        // Host Active/Offline check loop (runs every 3 seconds)
+        setInterval(() => {
+            if (!sessionActive) return;
+            const now = Date.now();
+            const elapsed = now - lastHostActiveTime;
+            const offlineOverlay = document.getElementById('offline-overlay');
+            if (elapsed > 25000) { // Host silent for > 25s
+                if (offlineOverlay && offlineOverlay.style.display !== 'flex') {
+                    console.warn(`[Offline Check] Host offline for ${elapsed}ms. Showing overlay.`);
+                    offlineOverlay.style.display = 'flex';
+                }
+            } else {
+                if (offlineOverlay && offlineOverlay.style.display !== 'none') {
+                    offlineOverlay.style.display = 'none';
+                }
+            }
+        }, 3000);
     </script>
 </body>
 </html>
