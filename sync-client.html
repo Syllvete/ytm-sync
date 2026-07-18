@@ -380,6 +380,13 @@
         ];
         let selectedPfp = localStorage.getItem('ytm_web_pfp') || presets[0];
 
+        // Host playback state tracking for auto-sync
+        let lastHostPosition = 0;
+        let lastHostPositionTimestamp = Date.now();
+        let lastHostIsPlaying = false;
+        let hostVideoId = '';
+        let role = 'Listener';
+
         // Render avatar choices
         const grid = document.getElementById('avatar-grid');
         presets.forEach(p => {
@@ -432,14 +439,16 @@
         function connectToSession() {
             eventSource = new EventSource(`https://ntfy.sh/ytmnative-sync-${sessionId}/sse`);
             eventSource.onmessage = (event) => {
+                console.log("Raw SSE message received:", event.data);
                 try {
                     const msg = JSON.parse(event.data);
                     if (msg.message) {
                         const payload = JSON.parse(msg.message);
+                        console.log("Parsed payload payload:", payload);
                         handleServerEvent(payload);
                     }
                 } catch (e) {
-                    // silent fail
+                    console.error("SSE parse error:", e);
                 }
             };
 
@@ -478,7 +487,13 @@
                             document.getElementById('chat-send').disabled = false;
                             
                             // Initialize track sync
+                            role = event.role || 'Listener';
                             if (event.videoId && player) {
+                                hostVideoId = event.videoId;
+                                lastHostPosition = event.position;
+                                lastHostPositionTimestamp = Date.now();
+                                lastHostIsPlaying = event.isPlaying;
+
                                 isSyncing = true;
                                 player.loadVideoById({
                                     videoId: event.videoId,
@@ -507,6 +522,7 @@
 
                 case 'ROLE_CHANGE':
                     if (event.targetGuestId === myId) {
+                        role = event.newRole;
                         document.getElementById('status-span').textContent = 'Connected (' + event.newRole + ')';
                         appendSystemMessage(`Your role was changed to ${event.newRole}`);
                     }
@@ -545,17 +561,27 @@
             isSyncing = true;
             if (cmd.action === 'track-change') {
                 if (cmd.videoId) {
+                    hostVideoId = cmd.videoId;
+                    lastHostPosition = cmd.position || 0;
+                    lastHostPositionTimestamp = Date.now();
+                    lastHostIsPlaying = cmd.isPlaying !== undefined ? cmd.isPlaying : true;
                     player.loadVideoById({
                         videoId: cmd.videoId,
-                        startSeconds: cmd.position
+                        startSeconds: lastHostPosition
                     });
                 }
             } else if (cmd.action === 'play') {
+                lastHostPosition = cmd.position;
+                lastHostPositionTimestamp = Date.now();
+                lastHostIsPlaying = true;
                 player.seekTo(cmd.position, true);
                 player.playVideo();
             } else if (cmd.action === 'pause') {
+                lastHostIsPlaying = false;
                 player.pauseVideo();
             } else if (cmd.action === 'seek') {
+                lastHostPosition = cmd.position;
+                lastHostPositionTimestamp = Date.now();
                 player.seekTo(cmd.position, true);
             }
             setTimeout(() => { isSyncing = false; }, 1000);
@@ -701,6 +727,58 @@
             }
             if (changed) renderRosterBar();
         }, 5000);
+
+        // Periodic Watch-along Auto-Sync loop (runs every 2 seconds)
+        setInterval(() => {
+            if (!player || typeof player.getCurrentTime !== 'function' || !player.getPlayerState) return;
+            if (isSyncing || role === 'Player') return; // Don't enforce if actively syncing or if the user is promoted to a Player
+
+            const state = player.getPlayerState();
+            if (state === YT.PlayerState.UNSTARTED || state === YT.PlayerState.BUFFERING) return;
+
+            // Detect if YouTube is playing an ad
+            let isAd = false;
+            if (typeof player.getVideoData === 'function') {
+                const data = player.getVideoData();
+                if (data && (data.isAd || data.title === 'Advertisement')) {
+                    isAd = true;
+                }
+            }
+            if (isAd) return; // Wait for ad to finish playing
+
+            const elapsed = (Date.now() - lastHostPositionTimestamp) / 1000;
+            const estimatedTime = lastHostPosition + (lastHostIsPlaying ? elapsed : 0);
+            const myTime = player.getCurrentTime();
+            const isMyPlaying = state === YT.PlayerState.PLAYING;
+
+            const diff = Math.abs(myTime - estimatedTime);
+            if (lastHostIsPlaying) {
+                if (diff > 2.5) {
+                    console.log(`[Auto-Sync] Off by ${diff.toFixed(2)}s. Resyncing to host time ${estimatedTime.toFixed(2)}s.`);
+                    isSyncing = true;
+                    player.seekTo(estimatedTime, true);
+                    player.playVideo();
+                    setTimeout(() => { isSyncing = false; }, 800);
+                } else if (!isMyPlaying) {
+                    console.log(`[Auto-Sync] Host is playing, forcing play.`);
+                    isSyncing = true;
+                    player.playVideo();
+                    setTimeout(() => { isSyncing = false; }, 800);
+                }
+            } else {
+                if (isMyPlaying) {
+                    console.log(`[Auto-Sync] Host is paused, forcing pause.`);
+                    isSyncing = true;
+                    player.pauseVideo();
+                    setTimeout(() => { isSyncing = false; }, 800);
+                } else if (diff > 1.5) {
+                    // Host is paused, make sure I am at the exact same frame
+                    isSyncing = true;
+                    player.seekTo(estimatedTime, true);
+                    setTimeout(() => { isSyncing = false; }, 800);
+                }
+            }
+        }, 500);
     </script>
 </body>
 </html>
