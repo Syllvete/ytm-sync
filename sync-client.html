@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YTMNative Listen Along</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --accent: #ff0033;
+            --bg: #0b0b12;
+            --card-bg: rgba(255, 255, 255, 0.02);
+            --border: rgba(255, 255, 255, 0.06);
+            --text: #f3f4f6;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Outfit', sans-serif;
+            overflow-x: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        /* Ambient background glow */
+        .ambient-glow {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: -1;
+            overflow: hidden;
+            pointer-events: none;
+        }
+        .glow-blob {
+            position: absolute;
+            width: 40vw;
+            height: 40vw;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(255, 0, 51, 0.15) 0%, rgba(99, 102, 241, 0.15) 50%, rgba(0,0,0,0) 100%);
+            filter: blur(80px);
+            animation: float 20s infinite alternate;
+        }
+        .glow-blob-2 {
+            position: absolute;
+            bottom: 0;
+            right: 0;
+            width: 50vw;
+            height: 50vw;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(6, 182, 212, 0.15) 0%, rgba(168, 85, 247, 0.15) 50%, rgba(0,0,0,0) 100%);
+            filter: blur(100px);
+            animation: float 25s infinite alternate-reverse;
+        }
+
+        @keyframes float {
+            0% { transform: translate(0, 0) scale(1); }
+            100% { transform: translate(10vw, 10vh) scale(1.2); }
+        }
+
+        /* Main Container */
+        .app-container {
+            display: flex;
+            width: 90%;
+            max-width: 1100px;
+            height: 80vh;
+            gap: 24px;
+            z-index: 10;
+        }
+
+        /* Glassmorphic card styling */
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            backdrop-filter: blur(30px);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .left-col {
+            flex: 1.4;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .right-col {
+            flex: 1;
+            height: 100%;
+        }
+
+        .player-card {
+            flex: 1;
+            position: relative;
+        }
+
+        #yt-player {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+
+        /* Welcome / Join panel overlay */
+        .overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(11, 11, 18, 0.95);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 20;
+            padding: 24px;
+            box-sizing: border-box;
+            gap: 16px;
+            text-align: center;
+        }
+
+        .overlay h2 {
+            margin: 0;
+            font-size: 24px;
+            background: linear-gradient(135deg, #fff, #aaa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .input-text {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: #fff;
+            padding: 10px 14px;
+            font-size: 14px;
+            width: 80%;
+            max-width: 300px;
+            outline: none;
+            text-align: center;
+            font-family: inherit;
+        }
+
+        .avatar-grid {
+            display: flex;
+            gap: 10px;
+            margin: 10px 0;
+        }
+
+        .avatar-btn {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            cursor: pointer;
+            border: 1px solid rgba(255,255,255,0.2);
+            padding: 0;
+            transition: transform 0.2s;
+        }
+
+        .avatar-btn.selected {
+            border: 2px solid var(--accent);
+            box-shadow: 0 0 10px var(--accent);
+            transform: scale(1.1);
+        }
+
+        .btn {
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            padding: 10px 24px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            font-family: inherit;
+        }
+
+        .btn:hover {
+            opacity: 0.9;
+        }
+
+        .btn:disabled {
+            background: #444;
+            cursor: not-allowed;
+        }
+
+        /* Right Panel Chat & Roster */
+        .chat-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .chat-header h3 {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .status-indicator {
+            font-size: 11px;
+            color: #ff0033;
+            background: rgba(255, 0, 51, 0.1);
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-weight: 600;
+        }
+
+        .chat-log {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .chat-input-area {
+            padding: 16px 20px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            gap: 8px;
+        }
+
+        /* Message design */
+        .msg {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            max-width: 85%;
+        }
+        .msg.self {
+            align-self: flex-end;
+        }
+        .msg.guest {
+            align-self: flex-start;
+        }
+        .msg-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            color: #888;
+        }
+        .msg-avatar {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background-size: cover;
+        }
+        .msg-bubble {
+            background: rgba(255,255,255,0.04);
+            color: #fff;
+            padding: 8px 12px;
+            border-radius: 10px;
+            font-size: 13px;
+            word-break: break-word;
+        }
+        .msg.self .msg-bubble {
+            background: var(--accent);
+        }
+        .time-tag {
+            color: var(--accent);
+            cursor: pointer;
+            font-weight: 500;
+        }
+
+        /* Roster summary row */
+        .roster-summary {
+            padding: 8px 20px;
+            background: rgba(255,255,255,0.01);
+            border-bottom: 1px solid var(--border);
+            font-size: 12px;
+            color: #aaa;
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            overflow-x: auto;
+        }
+        .roster-circle {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background-size: cover;
+            border: 1px solid rgba(255,255,255,0.2);
+            flex-shrink: 0;
+        }
+
+        @media (max-width: 768px) {
+            .app-container {
+                flex-direction: column;
+                height: 90vh;
+            }
+            .left-col {
+                flex: 0.8;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="ambient-glow">
+        <div class="glow-blob"></div>
+        <div class="glow-blob-2"></div>
+    </div>
+
+    <div class="app-container">
+        <div class="left-col">
+            <div class="card player-card">
+                <div id="join-overlay" class="overlay">
+                    <h2>YTMNative Live Stream</h2>
+                    <p>Enter your display name to tune in</p>
+                    <input type="text" id="name-input" class="input-text" placeholder="Your name...">
+                    <div class="avatar-grid" id="avatar-grid"></div>
+                    <button class="btn" id="join-btn">Send Join Request</button>
+                </div>
+                
+                <div id="wait-overlay" class="overlay" style="display: none;">
+                    <h2>Request Sent!</h2>
+                    <p>Waiting for host approval...</p>
+                    <div style="font-size: 12px; color: #888; margin-top: 10px;">Please stand by...</div>
+                </div>
+
+                <div id="player-container" style="width:100%; height:100%;">
+                    <div id="yt-player"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="right-col card">
+            <div class="chat-header">
+                <h3>Session Chat</h3>
+                <span class="status-indicator" id="status-span">Disconnected</span>
+            </div>
+            <div class="roster-summary" id="roster-summary">
+                No active users
+            </div>
+            <div class="chat-log" id="chat-log">
+                <div style="font-size:12px; color:#555; text-align:center; padding:20px 0;">Join the session to chat.</div>
+            </div>
+            <div class="chat-input-area">
+                <input type="text" id="chat-input" class="input-text" placeholder="Type a message..." style="flex:1; text-align:left;" disabled>
+                <button class="btn" id="chat-send" style="padding: 10px 18px;" disabled>Send</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- YouTube IFrame API Loader -->
+    <script src="https://www.youtube.com/iframe_api"></script>
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const sessionId = urlParams.get('session');
+        const initialVideoId = urlParams.get('v') || '';
+        
+        let player = null;
+        let eventSource = null;
+        let myId = localStorage.getItem('ytm_web_id') || Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
+        localStorage.setItem('ytm_web_id', myId);
+
+        let myName = localStorage.getItem('ytm_web_name') || 'Guest_' + Math.floor(1000 + Math.random() * 9000);
+        document.getElementById('name-input').value = myName;
+
+        const presets = [
+            'linear-gradient(135deg, #a855f7, #6366f1)',
+            'linear-gradient(135deg, #f43f5e, #e11d48)',
+            'linear-gradient(135deg, #06b6d4, #3b82f6)',
+            'linear-gradient(135deg, #f97316, #ef4444)',
+            'linear-gradient(135deg, #10b981, #059669)'
+        ];
+        let selectedPfp = localStorage.getItem('ytm_web_pfp') || presets[0];
+
+        // Render avatar choices
+        const grid = document.getElementById('avatar-grid');
+        presets.forEach(p => {
+            const btn = document.createElement('button');
+            btn.className = 'avatar-btn';
+            btn.style.background = p;
+            if (selectedPfp === p) btn.classList.add('selected');
+            btn.onclick = () => {
+                document.querySelectorAll('.avatar-btn').forEach(el => el.classList.remove('selected'));
+                btn.classList.add('selected');
+                selectedPfp = p;
+            };
+            grid.appendChild(btn);
+        });
+
+        // Initialize Youtube Player
+        function onYouTubeIframeAPIReady() {
+            player = new YT.Player('yt-player', {
+                videoId: initialVideoId || 'dQw4w9WgXcQ',
+                playerVars: {
+                    autoplay: 0,
+                    controls: 1,
+                    modestbranding: 1,
+                    rel: 0
+                },
+                events: {
+                    onReady: () => {
+                        console.log("Youtube Iframe API Ready");
+                    }
+                }
+            });
+        }
+
+        // Connect/Join actions
+        document.getElementById('join-btn').onclick = () => {
+            if (!sessionId) {
+                alert('No session ID found in URL! Please copy a valid invite link.');
+                return;
+            }
+            myName = document.getElementById('name-input').value.trim() || myName;
+            localStorage.setItem('ytm_web_name', myName);
+            localStorage.setItem('ytm_web_pfp', selectedPfp);
+
+            document.getElementById('join-overlay').style.display = 'none';
+            document.getElementById('wait-overlay').style.display = 'flex';
+
+            connectToSession();
+        };
+
+        function connectToSession() {
+            eventSource = new EventSource(`https://ntfy.sh/ytmnative-sync-${sessionId}/sse`);
+            eventSource.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    if (msg.message) {
+                        const payload = JSON.parse(msg.message);
+                        handleServerEvent(payload);
+                    }
+                } catch (e) {
+                    // silent fail
+                }
+            };
+
+            // Send Join Request
+            publish({
+                type: 'JOIN_REQUEST',
+                guestId: myId,
+                name: myName,
+                pfp: selectedPfp
+            });
+        }
+
+        function publish(payload) {
+            fetch(`https://ntfy.sh/ytmnative-sync-${sessionId}`, {
+                method: 'POST',
+                body: JSON.stringify(payload)
+            }).catch(() => {});
+        }
+
+        let isSyncing = false;
+        let guestRoster = [];
+
+        function handleServerEvent(event) {
+            if (!event || !event.type) return;
+
+            switch (event.type) {
+                case 'JOIN_RESPONSE':
+                    if (event.targetGuestId === myId) {
+                        if (event.status === 'ACCEPTED') {
+                            document.getElementById('wait-overlay').style.display = 'none';
+                            document.getElementById('status-span').textContent = 'Connected (' + event.role + ')';
+                            document.getElementById('status-span').style.background = 'rgba(5, 150, 105, 0.1)';
+                            document.getElementById('status-span').style.color = '#059669';
+                            
+                            document.getElementById('chat-input').disabled = false;
+                            document.getElementById('chat-send').disabled = false;
+                            
+                            // Initialize track sync
+                            if (event.videoId && player) {
+                                isSyncing = true;
+                                player.loadVideoById({
+                                    videoId: event.videoId,
+                                    startSeconds: event.position
+                                });
+                                if (event.isPlaying) player.playVideo();
+                                else player.pauseVideo();
+                                setTimeout(() => { isSyncing = false; }, 1000);
+                            }
+                            
+                            document.getElementById('chat-log').innerHTML = '<div style="font-size:11px;color:#059669;text-align:center;">Joined live session successfully!</div>';
+                            
+                            // Start heartbeat
+                            sendHeartbeat();
+                            setInterval(sendHeartbeat, 10000);
+                        } else {
+                            alert(event.status === 'BANNED' ? 'You are banned from this session.' : 'Join request rejected.');
+                            window.location.reload();
+                        }
+                    }
+                    break;
+                    
+                case 'HEARTBEAT':
+                    updateGuestList(event);
+                    break;
+
+                case 'ROLE_CHANGE':
+                    if (event.targetGuestId === myId) {
+                        document.getElementById('status-span').textContent = 'Connected (' + event.newRole + ')';
+                        appendSystemMessage(`Your role was changed to ${event.newRole}`);
+                    }
+                    break;
+
+                case 'KICK_BAN':
+                    if (event.targetGuestId === myId) {
+                        alert(event.action === 'BAN' ? 'You have been banned.' : 'You have been kicked.');
+                        window.location.reload();
+                    }
+                    break;
+
+                case 'PLAYBACK_CMD':
+                    if (player && !isSyncing) {
+                        executePlayback(event);
+                    }
+                    break;
+
+                case 'CHAT':
+                    renderChatMessage(event);
+                    break;
+            }
+        }
+
+        function sendHeartbeat() {
+            publish({
+                type: 'HEARTBEAT',
+                guestId: myId,
+                name: myName,
+                pfp: selectedPfp,
+                role: 'Web Listener'
+            });
+        }
+
+        function executePlayback(cmd) {
+            isSyncing = true;
+            if (cmd.action === 'track-change') {
+                if (cmd.videoId) {
+                    player.loadVideoById({
+                        videoId: cmd.videoId,
+                        startSeconds: cmd.position
+                    });
+                }
+            } else if (cmd.action === 'play') {
+                player.seekTo(cmd.position, true);
+                player.playVideo();
+            } else if (cmd.action === 'pause') {
+                player.pauseVideo();
+            } else if (cmd.action === 'seek') {
+                player.seekTo(cmd.position, true);
+            }
+            setTimeout(() => { isSyncing = false; }, 1000);
+        }
+
+        // Chat send
+        document.getElementById('chat-send').onclick = sendChat;
+        document.getElementById('chat-input').onkeydown = (e) => {
+            if (e.key === 'Enter') sendChat();
+        };
+
+        function sendChat() {
+            const input = document.getElementById('chat-input');
+            const text = input.value.trim();
+            if (!text) return;
+
+            let timeStr = '00:00';
+            if (player) {
+                const s = Math.floor(player.getCurrentTime());
+                const m = Math.floor(s / 60);
+                const r = s % 60;
+                timeStr = (m < 10 ? '0' + m : m) + ':' + (r < 10 ? '0' + r : r);
+            }
+
+            const chatMsg = {
+                type: 'CHAT',
+                text: text,
+                timestamp: Date.now(),
+                songTimestamp: timeStr,
+                senderId: myId,
+                senderName: myName,
+                senderPfp: selectedPfp
+            };
+            
+            publish(chatMsg);
+            renderChatMessage(chatMsg);
+            input.value = '';
+        }
+
+        function renderChatMessage(msg) {
+            const isSelf = msg.senderId === myId;
+            const log = document.getElementById('chat-log');
+            
+            const row = document.createElement('div');
+            row.style.display = 'flex';
+            row.style.flexDirection = 'column';
+            row.style.alignItems = isSelf ? 'flex-end' : 'flex-start';
+            row.style.gap = '2px';
+            
+            const header = document.createElement('div');
+            header.className = 'msg-header';
+            
+            const avatar = document.createElement('div');
+            avatar.className = 'msg-avatar';
+            avatar.style.background = msg.senderPfp;
+            avatar.style.backgroundSize = 'cover';
+
+            const nameEl = document.createElement('span');
+            nameEl.textContent = msg.senderName;
+            nameEl.style.fontWeight = '600';
+
+            const timeEl = document.createElement('span');
+            timeEl.className = 'time-tag';
+            timeEl.textContent = msg.songTimestamp ? `[${msg.songTimestamp}]` : '';
+
+            if (isSelf) {
+                header.appendChild(timeEl);
+                header.appendChild(nameEl);
+                header.appendChild(avatar);
+            } else {
+                header.appendChild(avatar);
+                header.appendChild(nameEl);
+                header.appendChild(timeEl);
+            }
+
+            const bubble = document.createElement('div');
+            bubble.className = 'msg-bubble';
+            bubble.textContent = msg.text;
+
+            row.appendChild(header);
+            row.appendChild(bubble);
+            log.appendChild(row);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function appendSystemMessage(txt) {
+            const log = document.getElementById('chat-log');
+            const el = document.createElement('div');
+            el.style.fontSize = '11px';
+            el.style.color = '#777';
+            el.style.textAlign = 'center';
+            el.style.margin = '4px 0';
+            el.textContent = txt;
+            log.appendChild(el);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        let heartbeats = {};
+        function updateGuestList(guest) {
+            heartbeats[guest.guestId] = Date.now();
+            const existing = guestRoster.find(g => g.guestId === guest.guestId);
+            if (existing) {
+                existing.name = guest.name;
+                existing.pfp = guest.pfp;
+            } else {
+                guestRoster.push({
+                    guestId: guest.guestId,
+                    name: guest.name,
+                    pfp: guest.pfp
+                });
+            }
+            renderRosterBar();
+        }
+
+        function renderRosterBar() {
+            const bar = document.getElementById('roster-summary');
+            bar.innerHTML = '';
+            
+            if (guestRoster.length === 0) {
+                bar.textContent = 'No active users';
+                return;
+            }
+
+            guestRoster.forEach(g => {
+                const circle = document.createElement('div');
+                circle.className = 'roster-circle';
+                circle.style.background = g.pfp;
+                circle.title = g.name;
+                bar.appendChild(circle);
+            });
+        }
+
+        // Clean stale guests
+        setInterval(() => {
+            const now = Date.now();
+            let changed = false;
+            for (const id in heartbeats) {
+                if (now - heartbeats[id] > 25000) {
+                    delete heartbeats[id];
+                    guestRoster = guestRoster.filter(g => g.guestId !== id);
+                    changed = true;
+                }
+            }
+            if (changed) renderRosterBar();
+        }, 5000);
+    </script>
+</body>
+</html>
