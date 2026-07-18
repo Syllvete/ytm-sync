@@ -463,6 +463,15 @@
 
         renderAvatars();
 
+        window.addEventListener('DOMContentLoaded', () => {
+            if (sessionId && localStorage.getItem('ytm_web_session_id') === sessionId) {
+                // Auto-rejoin on refresh
+                document.getElementById('join-overlay').style.display = 'none';
+                document.getElementById('wait-overlay').style.display = 'flex';
+                connectToSession();
+            }
+        });
+
         // Initialize Youtube Player
         function onYouTubeIframeAPIReady() {
             player = new YT.Player('yt-player', {
@@ -566,6 +575,7 @@
                             }
                             
                             document.getElementById('chat-log').innerHTML = '<div style="font-size:11px;color:#059669;text-align:center;">Joined live session successfully!</div>';
+                            localStorage.setItem('ytm_web_session_id', sessionId);
                             
                             // Start heartbeat
                             sendHeartbeat();
@@ -603,7 +613,9 @@
                     break;
 
                 case 'CHAT':
-                    renderChatMessage(event);
+                    if (event.senderId !== myId) {
+                        renderChatMessage(event);
+                    }
                     break;
             }
         }
@@ -660,8 +672,10 @@
             if (!text) return;
 
             let timeStr = '00:00';
-            if (player) {
-                const s = Math.floor(player.getCurrentTime());
+            const elapsed = (Date.now() - lastHostPositionTimestamp) / 1000;
+            const est = lastHostPosition + (lastHostIsPlaying ? elapsed : 0);
+            if (est > 0) {
+                const s = Math.floor(est);
                 const m = Math.floor(s / 60);
                 const r = s % 60;
                 timeStr = (m < 10 ? '0' + m : m) + ':' + (r < 10 ? '0' + r : r);
