@@ -126,6 +126,7 @@
             box-sizing: border-box;
             gap: 16px;
             text-align: center;
+            overflow-y: auto;
         }
 
         .overlay h2 {
@@ -359,7 +360,7 @@
             </div>
 
             <!-- Synced Lyrics & Player Controls Card -->
-            <div class="card info-card" id="info-card" style="flex: 0.8; display: flex; flex-direction: column; overflow: hidden; padding: 20px;">
+            <div class="card info-card" id="info-card" style="flex: 0.8; display: none; flex-direction: column; overflow: hidden; padding: 20px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 12px;">
                     <div style="display: flex; gap: 16px;">
                         <span id="tab-lyrics" style="cursor: pointer; font-size: 15px; font-weight: 600; color: #fff; border-bottom: 2px solid var(--accent); padding-bottom: 6px; transition: color 0.2s;">Lyrics</span>
@@ -719,6 +720,7 @@
                     if (event.targetGuestId === myId) {
                         if (event.status === 'ACCEPTED') {
                             document.getElementById('wait-overlay').style.display = 'none';
+                            document.getElementById('info-card').style.display = 'flex';
                             document.getElementById('status-span').textContent = 'Connected (' + event.role + ')';
                             document.getElementById('status-span').style.background = 'rgba(5, 150, 105, 0.1)';
                             document.getElementById('status-span').style.color = '#059669';
