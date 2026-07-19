@@ -428,22 +428,21 @@
         </div>
     </div>
 
+    <!-- PeerJS WebRTC Library -->
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <!-- YouTube IFrame API Loader -->
     <script src="https://www.youtube.com/iframe_api"></script>
     <script>
         const urlParams = new URLSearchParams(window.location.search);
         const sessionId = urlParams.get('session');
         const initialVideoId = urlParams.get('v') || '';
-        const brokerHost = urlParams.get('broker') || 'ntfy.sh';
         
         let player = null;
-        let eventSource = null;
         let myId = localStorage.getItem('ytm_web_id') || Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
         localStorage.setItem('ytm_web_id', myId);
 
-        let peerConnection = null;
-        let dataChannel = null;
-        let iceQueue = [];
+        let peer = null;
+        let hostConn = null;
         let heartbeatInterval = null;
 
         let myName = localStorage.getItem('ytm_web_name') || 'Guest_' + Math.floor(1000 + Math.random() * 9000);
@@ -618,168 +617,66 @@
             connectToSession();
         };
 
-        function setupClientDataChannel(channel) {
-            channel.onopen = () => {
-                console.log("[YTM Sync] Direct WebRTC data channel established!");
-                sessionActive = true;
-                
-                // Hide wait overlay
-                document.getElementById('wait-overlay').style.display = 'none';
-                
-                // Close EventSource/ntfy.sh subscription to bypass rate limits permanently!
-                if (eventSource) {
-                    eventSource.close();
-                    eventSource = null;
-                }
-            };
+        function connectToSession() {
+            if (peer) {
+                try { peer.destroy(); } catch(e) {}
+            }
             
-            channel.onmessage = (event) => {
-                try {
-                    const payload = JSON.parse(event.data);
-                    handleServerEvent(payload);
-                } catch (e) {
-                    console.error('[YTM Sync] Error parsing direct channel payload:', e);
-                }
-            };
+            peer = new Peer();
             
-            channel.onclose = () => {
-                console.log("[YTM Sync] Direct WebRTC data channel closed.");
-                dataChannel = null;
-                peerConnection = null;
+            peer.on('open', (id) => {
+                console.log(`[YTM Sync] Local PeerJS open with ID: ${id}`);
+                console.log(`[YTM Sync] Connecting to host peer: ytmnative-${sessionId}`);
+                
+                hostConn = peer.connect(`ytmnative-${sessionId}`, {
+                    metadata: {
+                        guestId: myId,
+                        name: myName,
+                        pfp: selectedPfp
+                    }
+                });
+
+                setupHostConnection(hostConn);
+            });
+
+            peer.on('error', (err) => {
+                console.error('[YTM Sync] PeerJS error:', err);
                 const offlineOverlay = document.getElementById('offline-overlay');
                 if (offlineOverlay) offlineOverlay.style.display = 'flex';
-            };
-            
-            channel.onerror = (err) => {
-                console.error("[YTM Sync] Direct WebRTC data channel error:", err);
-            };
+            });
         }
 
-        async function handleWebRTCOffer(event) {
-            try {
-                if (peerConnection) {
-                    peerConnection.close();
-                }
-                
-                peerConnection = new RTCPeerConnection({
-                    iceServers: [
-                        { urls: 'stun:stun.l.google.com:19302' },
-                        { urls: 'stun:stun1.l.google.com:19302' }
-                    ]
-                });
-                
-                iceQueue = [];
-                
-                peerConnection.onicecandidate = (e) => {
-                    if (e.candidate) {
-                        publish({
-                            type: 'WEBRTC_ICE',
-                            targetGuestId: myId,
-                            candidate: e.candidate,
-                            senderId: myId
-                        });
-                    }
-                };
+        function setupHostConnection(conn) {
+            conn.on('open', () => {
+                console.log('[YTM Sync] PeerJS direct connection to host open!');
+            });
 
-                peerConnection.onconnectionstatechange = () => {
-                    console.log("[YTM Sync] Client connection state change:", peerConnection.connectionState);
-                    if (peerConnection.connectionState === 'disconnected' || 
-                        peerConnection.connectionState === 'failed' || 
-                        peerConnection.connectionState === 'closed') {
-                        const offlineOverlay = document.getElementById('offline-overlay');
-                        if (offlineOverlay) offlineOverlay.style.display = 'flex';
-                    }
-                };
-                
-                peerConnection.ondatachannel = (e) => {
-                    dataChannel = e.channel;
-                    setupClientDataChannel(dataChannel);
-                };
-                
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(event.offer));
-                
-                iceQueue.forEach(cand => {
-                    peerConnection.addIceCandidate(new RTCIceCandidate(cand))
-                        .catch(err => console.error('[YTM Sync] Client failed to add queued ICE:', err));
-                });
-                iceQueue = [];
-                
-                const answer = await peerConnection.createAnswer();
-                await peerConnection.setLocalDescription(answer);
-                
-                publish({
-                    type: 'WEBRTC_ANSWER',
-                    answer: answer,
-                    senderId: myId
-                });
-            } catch (err) {
-                console.error('[YTM Sync] Client failed WebRTC offer processing:', err);
-            }
-        }
+            conn.on('data', (data) => {
+                console.log('[YTM Sync] Direct message received from host:', data);
+                handleServerEvent(data);
+            });
 
-        function connectSSE() {
-            if (eventSource) eventSource.close();
-            
-            eventSource = new EventSource(`https://${brokerHost}/ytmnative-sync-${sessionId}/sse`);
-            
-            eventSource.onopen = () => {
-                console.log("SSE Connection opened. Sending JOIN_REQUEST.");
-                publish({
-                    type: 'JOIN_REQUEST',
-                    guestId: myId,
-                    name: myName,
-                    pfp: selectedPfp
-                });
-            };
+            conn.on('close', () => {
+                console.log('[YTM Sync] Host connection closed.');
+                hostConn = null;
+                const offlineOverlay = document.getElementById('offline-overlay');
+                if (offlineOverlay) offlineOverlay.style.display = 'flex';
+            });
 
-            eventSource.onmessage = (ev) => {
-                console.log("Raw SSE message received:", ev.data);
-                try {
-                    const msg = JSON.parse(ev.data);
-                    if (msg.message) {
-                        const payload = JSON.parse(msg.message);
-                        console.log("Parsed payload:", payload);
-                        handleServerEvent(payload);
-                    }
-                } catch (e) {
-                    console.error("SSE parse error:", e);
-                }
-            };
-
-            // Let EventSource handle its own reconnection.
-            // Only intervene if the connection is fully dead (readyState === CLOSED).
-            eventSource.onerror = () => {
-                if (eventSource.readyState === EventSource.CLOSED) {
-                    console.warn("SSE connection fully closed. Reconnecting in 3s...");
-                    setTimeout(() => {
-                        if (sessionActive || document.getElementById('wait-overlay').style.display === 'flex') {
-                            connectSSE();
-                        }
-                    }, 3000);
-                }
-            };
-        }
-
-        function connectToSession() {
-            connectSSE();
+            conn.on('error', (err) => {
+                console.error('[YTM Sync] Host connection error:', err);
+                const offlineOverlay = document.getElementById('offline-overlay');
+                if (offlineOverlay) offlineOverlay.style.display = 'flex';
+            });
         }
 
         function publish(payload) {
-            if (dataChannel && dataChannel.readyState === 'open') {
+            if (hostConn && hostConn.open) {
                 try {
-                    dataChannel.send(JSON.stringify(payload));
+                    hostConn.send(payload);
                 } catch(e) {
-                    console.error('[YTM Sync] WebRTC write failed, falling back to ntfy:', e);
-                    fetch(`https://${brokerHost}/ytmnative-sync-${sessionId}`, {
-                        method: 'POST',
-                        body: JSON.stringify(payload)
-                    }).catch(() => {});
+                    console.error('[YTM Sync] PeerJS direct write failed:', e);
                 }
-            } else {
-                fetch(`https://${brokerHost}/ytmnative-sync-${sessionId}`, {
-                    method: 'POST',
-                    body: JSON.stringify(payload)
-                }).catch(() => {});
             }
         }
 
@@ -1722,28 +1619,28 @@
         }
 
         window.addEventListener('beforeunload', () => {
-            if (sessionActive) {
-                fetch(`https://${brokerHost}/ytmnative-sync-${sessionId}`, {
-                    method: 'POST',
-                    body: JSON.stringify({
+            if (hostConn) {
+                try {
+                    hostConn.send({
                         type: 'LEAVE',
                         guestId: myId,
                         guestName: myName
-                    }),
-                    keepalive: true
-                }).catch(() => {});
+                    });
+                    hostConn.close();
+                } catch(e) {}
+            }
+            if (peer) {
+                try { peer.destroy(); } catch(e) {}
             }
         });
 
-        // Host Active/Offline check loop (runs every 3 seconds)
+        // Host Active/Offline check loop (runs every 2 seconds)
         setInterval(() => {
             if (!sessionActive) return;
-            const now = Date.now();
-            const elapsed = now - lastHostActiveTime;
             const offlineOverlay = document.getElementById('offline-overlay');
-            if (elapsed > 25000) { // Host silent for > 25s
+            if (!hostConn || !hostConn.open) {
                 if (offlineOverlay && offlineOverlay.style.display !== 'flex') {
-                    console.warn(`[Offline Check] Host offline for ${elapsed}ms. Showing overlay.`);
+                    console.warn("[Offline Check] Host connection lost. Showing overlay.");
                     offlineOverlay.style.display = 'flex';
                 }
             } else {
@@ -1751,7 +1648,7 @@
                     offlineOverlay.style.display = 'none';
                 }
             }
-        }, 3000);
+        }, 2000);
     </script>
 </body>
 </html>
