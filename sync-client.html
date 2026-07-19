@@ -69,7 +69,7 @@
             display: flex;
             width: 90%;
             max-width: 1100px;
-            height: 80vh;
+            height: 85vh;
             gap: 24px;
             z-index: 10;
         }
@@ -91,6 +91,7 @@
             display: flex;
             flex-direction: column;
             gap: 20px;
+            height: 100%;
         }
 
         .right-col {
@@ -99,7 +100,9 @@
         }
 
         .player-card {
-            flex: 1;
+            flex: none;
+            width: 100%;
+            aspect-ratio: 16 / 9;
             position: relative;
         }
 
@@ -316,10 +319,27 @@
         @media (max-width: 768px) {
             .app-container {
                 flex-direction: column;
-                height: 90vh;
+                height: auto;
+                width: 95%;
+                margin: 20px auto;
+                gap: 16px;
             }
             .left-col {
-                flex: 0.8;
+                flex: none;
+                width: 100%;
+            }
+            .right-col {
+                flex: none;
+                width: 100%;
+                height: 480px;
+            }
+            .player-card {
+                aspect-ratio: 16 / 9;
+                flex: none;
+            }
+            .info-card {
+                height: 240px;
+                flex: none;
             }
         }
     </style>
@@ -1562,23 +1582,17 @@
         function renderSyncedLyrics() {
             const container = document.getElementById('lyrics-content');
             container.innerHTML = '';
-            container.style.justifyContent = 'flex-start';
+            container.style.justifyContent = 'center';
+            container.style.alignItems = 'center';
             
-            const topSpacer = document.createElement('div');
-            topSpacer.style.height = '40%';
-            container.appendChild(topSpacer);
-
             currentLrc.forEach((line, index) => {
                 const el = document.createElement('div');
                 el.className = 'lyric-line';
                 el.id = `lyric-line-${index}`;
+                el.style.display = 'none'; // Hidden by default
                 el.textContent = line.text || '• • •';
                 container.appendChild(el);
             });
-
-            const bottomSpacer = document.createElement('div');
-            bottomSpacer.style.height = '40%';
-            container.appendChild(bottomSpacer);
         }
 
         function updateLyricsHighlight(time) {
@@ -1594,26 +1608,28 @@
             }
 
             if (activeIndex !== lastActiveLyricLine) {
-                if (lastActiveLyricLine !== -1) {
-                    const oldEl = document.getElementById(`lyric-line-${lastActiveLyricLine}`);
-                    if (oldEl) {
-                        oldEl.classList.remove('active');
-                    }
-                }
+                currentLrc.forEach((line, index) => {
+                    const el = document.getElementById(`lyric-line-${index}`);
+                    if (!el) return;
 
-                if (activeIndex !== -1) {
-                    const newEl = document.getElementById(`lyric-line-${activeIndex}`);
-                    if (newEl) {
-                        newEl.classList.add('active');
-                        
-                        const container = document.getElementById('lyrics-content');
-                        const containerHeight = container.clientHeight;
-                        const lineTop = newEl.offsetTop;
-                        const linePercentHeight = newEl.clientHeight / 2;
-                        
-                        container.scrollTop = lineTop - (containerHeight / 2) + linePercentHeight;
+                    const isPrev = index === activeIndex - 1;
+                    const isCurrent = index === activeIndex;
+                    const isNext = index === activeIndex + 1;
+
+                    if (isPrev || isCurrent || isNext) {
+                        el.style.display = 'block';
+                        if (isCurrent) {
+                            el.classList.add('active');
+                            el.style.opacity = '1';
+                        } else {
+                            el.classList.remove('active');
+                            el.style.opacity = '0.4';
+                        }
+                    } else {
+                        el.style.display = 'none';
                     }
-                }
+                });
+                
                 lastActiveLyricLine = activeIndex;
             }
         }
