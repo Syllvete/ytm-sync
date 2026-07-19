@@ -434,11 +434,17 @@
         const urlParams = new URLSearchParams(window.location.search);
         const sessionId = urlParams.get('session');
         const initialVideoId = urlParams.get('v') || '';
+        const brokerHost = urlParams.get('broker') || 'ntfy.sh';
         
         let player = null;
         let eventSource = null;
         let myId = localStorage.getItem('ytm_web_id') || Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
         localStorage.setItem('ytm_web_id', myId);
+
+        let peerConnection = null;
+        let dataChannel = null;
+        let iceQueue = [];
+        let heartbeatInterval = null;
 
         let myName = localStorage.getItem('ytm_web_name') || 'Guest_' + Math.floor(1000 + Math.random() * 9000);
         document.getElementById('name-input').value = myName;
@@ -612,10 +618,109 @@
             connectToSession();
         };
 
+        function setupClientDataChannel(channel) {
+            channel.onopen = () => {
+                console.log("[YTM Sync] Direct WebRTC data channel established!");
+                sessionActive = true;
+                
+                // Hide wait overlay
+                document.getElementById('wait-overlay').style.display = 'none';
+                
+                // Close EventSource/ntfy.sh subscription to bypass rate limits permanently!
+                if (eventSource) {
+                    eventSource.close();
+                    eventSource = null;
+                }
+            };
+            
+            channel.onmessage = (event) => {
+                try {
+                    const payload = JSON.parse(event.data);
+                    handleServerEvent(payload);
+                } catch (e) {
+                    console.error('[YTM Sync] Error parsing direct channel payload:', e);
+                }
+            };
+            
+            channel.onclose = () => {
+                console.log("[YTM Sync] Direct WebRTC data channel closed.");
+                dataChannel = null;
+                peerConnection = null;
+                const offlineOverlay = document.getElementById('offline-overlay');
+                if (offlineOverlay) offlineOverlay.style.display = 'flex';
+            };
+            
+            channel.onerror = (err) => {
+                console.error("[YTM Sync] Direct WebRTC data channel error:", err);
+            };
+        }
+
+        async function handleWebRTCOffer(event) {
+            try {
+                if (peerConnection) {
+                    peerConnection.close();
+                }
+                
+                peerConnection = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' }
+                    ]
+                });
+                
+                iceQueue = [];
+                
+                peerConnection.onicecandidate = (e) => {
+                    if (e.candidate) {
+                        publish({
+                            type: 'WEBRTC_ICE',
+                            targetGuestId: myId,
+                            candidate: e.candidate,
+                            senderId: myId
+                        });
+                    }
+                };
+
+                peerConnection.onconnectionstatechange = () => {
+                    console.log("[YTM Sync] Client connection state change:", peerConnection.connectionState);
+                    if (peerConnection.connectionState === 'disconnected' || 
+                        peerConnection.connectionState === 'failed' || 
+                        peerConnection.connectionState === 'closed') {
+                        const offlineOverlay = document.getElementById('offline-overlay');
+                        if (offlineOverlay) offlineOverlay.style.display = 'flex';
+                    }
+                };
+                
+                peerConnection.ondatachannel = (e) => {
+                    dataChannel = e.channel;
+                    setupClientDataChannel(dataChannel);
+                };
+                
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(event.offer));
+                
+                iceQueue.forEach(cand => {
+                    peerConnection.addIceCandidate(new RTCIceCandidate(cand))
+                        .catch(err => console.error('[YTM Sync] Client failed to add queued ICE:', err));
+                });
+                iceQueue = [];
+                
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                
+                publish({
+                    type: 'WEBRTC_ANSWER',
+                    answer: answer,
+                    senderId: myId
+                });
+            } catch (err) {
+                console.error('[YTM Sync] Client failed WebRTC offer processing:', err);
+            }
+        }
+
         function connectSSE() {
             if (eventSource) eventSource.close();
             
-            eventSource = new EventSource(`https://ntfy.sh/ytmnative-sync-${sessionId}/sse`);
+            eventSource = new EventSource(`https://${brokerHost}/ytmnative-sync-${sessionId}/sse`);
             
             eventSource.onopen = () => {
                 console.log("SSE Connection opened. Sending JOIN_REQUEST.");
@@ -660,10 +765,22 @@
         }
 
         function publish(payload) {
-            fetch(`https://ntfy.sh/ytmnative-sync-${sessionId}`, {
-                method: 'POST',
-                body: JSON.stringify(payload)
-            }).catch(() => {});
+            if (dataChannel && dataChannel.readyState === 'open') {
+                try {
+                    dataChannel.send(JSON.stringify(payload));
+                } catch(e) {
+                    console.error('[YTM Sync] WebRTC write failed, falling back to ntfy:', e);
+                    fetch(`https://${brokerHost}/ytmnative-sync-${sessionId}`, {
+                        method: 'POST',
+                        body: JSON.stringify(payload)
+                    }).catch(() => {});
+                }
+            } else {
+                fetch(`https://${brokerHost}/ytmnative-sync-${sessionId}`, {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                }).catch(() => {});
+            }
         }
 
         let isSyncing = false;
@@ -716,6 +833,26 @@
             }
 
             switch (event.type) {
+                case 'WEBRTC_OFFER':
+                    if (event.targetGuestId === myId) {
+                        console.log("[YTM Sync] Received WebRTC Offer from host.");
+                        handleWebRTCOffer(event);
+                    }
+                    break;
+                    
+                case 'WEBRTC_ICE':
+                    if (event.targetGuestId === myId) {
+                        if (peerConnection) {
+                            if (peerConnection.remoteDescription) {
+                                peerConnection.addIceCandidate(new RTCIceCandidate(event.candidate))
+                                    .catch(err => console.error('[YTM Sync] Client failed to add ICE candidate:', err));
+                            } else {
+                                iceQueue.push(event.candidate);
+                            }
+                        }
+                    }
+                    break;
+
                 case 'JOIN_RESPONSE':
                     if (event.targetGuestId === myId) {
                         if (event.status === 'ACCEPTED') {
@@ -758,8 +895,9 @@
                             lastHostActiveTime = Date.now();
                             
                             // Start heartbeat
+                            if (heartbeatInterval) clearInterval(heartbeatInterval);
                             sendHeartbeat();
-                            setInterval(sendHeartbeat, 10000);
+                            heartbeatInterval = setInterval(sendHeartbeat, 10000);
                         } else {
                             alert(event.status === 'BANNED' ? 'You are banned from this session.' : 'Join request rejected.');
                             window.location.reload();
@@ -1585,7 +1723,7 @@
 
         window.addEventListener('beforeunload', () => {
             if (sessionActive) {
-                fetch(`https://ntfy.sh/ytmnative-sync-${sessionId}`, {
+                fetch(`https://${brokerHost}/ytmnative-sync-${sessionId}`, {
                     method: 'POST',
                     body: JSON.stringify({
                         type: 'LEAVE',
