@@ -298,6 +298,20 @@
             flex-shrink: 0;
         }
 
+        /* Lyric highlight styling */
+        .lyric-line {
+            padding: 8px 0;
+            font-size: 16px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            color: rgba(255, 255, 255, 0.35);
+        }
+        .lyric-line.active {
+            color: #ff0033;
+            transform: scale(1.06);
+            text-shadow: 0 0 12px rgba(255, 0, 51, 0.4);
+        }
+
         @media (max-width: 768px) {
             .app-container {
                 flex-direction: column;
@@ -317,7 +331,7 @@
 
     <div class="app-container">
         <div class="left-col">
-            <div class="card player-card">
+            <div class="card player-card" style="flex: 1.2;">
                 <div id="join-overlay" class="overlay">
                     <h2>YTMNative Live Stream</h2>
                     <p>Enter your display name to tune in</p>
@@ -341,6 +355,51 @@
 
                 <div id="player-container" style="width:100%; height:100%;">
                     <div id="yt-player"></div>
+                </div>
+            </div>
+
+            <!-- Synced Lyrics & Player Controls Card -->
+            <div class="card info-card" id="info-card" style="flex: 0.8; display: flex; flex-direction: column; overflow: hidden; padding: 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 12px;">
+                    <div style="display: flex; gap: 16px;">
+                        <span id="tab-lyrics" style="cursor: pointer; font-size: 15px; font-weight: 600; color: #fff; border-bottom: 2px solid var(--accent); padding-bottom: 6px; transition: color 0.2s;">Lyrics</span>
+                        <span id="tab-controls" style="cursor: pointer; font-size: 15px; font-weight: 600; color: #888; padding-bottom: 6px; display: none; transition: color 0.2s;">Controls</span>
+                    </div>
+                    <span id="lyrics-source" style="font-size: 11px; color: #888;">LRCLIB</span>
+                </div>
+                
+                <!-- Tab 1: Lyrics Content -->
+                <div id="lyrics-tab-content" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column;">
+                    <div id="lyrics-content" style="flex: 1; overflow-y: auto; font-size: 14px; line-height: 1.6; display: flex; flex-direction: column; gap: 8px; scroll-behavior: smooth; text-align: center; justify-content: center; color: #aaa;">
+                        Join a session to load lyrics.
+                    </div>
+                </div>
+
+                <!-- Tab 2: Player Controls Content -->
+                <div id="controls-tab-content" style="flex: 1; overflow-y: auto; display: none; flex-direction: column; gap: 14px;">
+                    <!-- Playback Action Buttons -->
+                    <div style="display: flex; justify-content: center; align-items: center; gap: 12px;">
+                        <button class="btn" id="ctrl-back" style="padding: 8px 14px; background: rgba(255,255,255,0.05); border: 1px solid var(--border);" title="Rewind 10s">⏪ 10s</button>
+                        <button class="btn" id="ctrl-play" style="padding: 10px 20px;">Play</button>
+                        <button class="btn" id="ctrl-pause" style="padding: 10px 20px; background: #555;">Pause</button>
+                        <button class="btn" id="ctrl-skip" style="padding: 8px 14px; background: rgba(255,255,255,0.05); border: 1px solid var(--border);" title="Forward 10s">10s ⏩</button>
+                    </div>
+
+                    <!-- Timeline Seek Slider -->
+                    <div style="display: flex; align-items: center; gap: 10px; width: 100%;">
+                        <span id="ctrl-time-current" style="font-size: 11px; color: #888; width: 35px; text-align: right;">0:00</span>
+                        <input type="range" id="ctrl-seek-slider" min="0" max="100" value="0" style="flex: 1; accent-color: var(--accent); cursor: pointer;">
+                        <span id="ctrl-time-total" style="font-size: 11px; color: #888; width: 35px;">0:00</span>
+                    </div>
+
+                    <!-- Search / URL Paste Area -->
+                    <div style="border-top: 1px solid var(--border); padding-top: 12px; display: flex; flex-direction: column; gap: 8px;">
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="ctrl-search-input" class="input-text" placeholder="Search song or paste YT link..." style="flex: 1; text-align: left; max-width: none;">
+                            <button class="btn" id="ctrl-search-btn" style="padding: 10px 16px;">Search</button>
+                        </div>
+                        <div id="search-results" style="max-height: 150px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; background: rgba(255,255,255,0.01); border-radius: 6px;"></div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -401,6 +460,12 @@
         let lastHostActiveTime = Date.now();
         let sessionActive = false;
         let isEditingProfile = false;
+
+        // Lyrics & Player Controls State
+        let currentLrc = [];
+        let isSyncedLyrics = false;
+        let lastActiveLyricLine = -1;
+        let isUserSeeking = false;
 
         // Render avatar choices
         const grid = document.getElementById('avatar-grid');
@@ -550,6 +615,17 @@
             if (eventSource) eventSource.close();
             
             eventSource = new EventSource(`https://ntfy.sh/ytmnative-sync-${sessionId}/sse`);
+            
+            eventSource.onopen = () => {
+                console.log("SSE Connection opened. Sending JOIN_REQUEST.");
+                publish({
+                    type: 'JOIN_REQUEST',
+                    guestId: myId,
+                    name: myName,
+                    pfp: selectedPfp
+                });
+            };
+
             eventSource.onmessage = (ev) => {
                 console.log("Raw SSE message received:", ev.data);
                 try {
@@ -580,14 +656,6 @@
 
         function connectToSession() {
             connectSSE();
-
-            // Send Join Request (only once per explicit join)
-            publish({
-                type: 'JOIN_REQUEST',
-                guestId: myId,
-                name: myName,
-                pfp: selectedPfp
-            });
         }
 
         function publish(payload) {
@@ -602,7 +670,7 @@
         let imageAssemblyBuffer = {};
 
         function handleImageChunk(event) {
-            const { txId, index, total, chunk, senderId, senderName, senderPfp, songTimestamp } = event;
+            const { txId, index, total, chunk, senderId, songTimestamp } = event;
             if (!imageAssemblyBuffer[txId]) {
                 imageAssemblyBuffer[txId] = new Array(total).fill(null);
             }
@@ -614,11 +682,19 @@
                 const fullBase64 = imageAssemblyBuffer[txId].join('');
                 delete imageAssemblyBuffer[txId];
                 
+                let sender = guestRoster.find(g => g.guestId === senderId);
+                if (!sender && senderId === 'HOST') {
+                    sender = { name: 'Host', pfp: presets[0] };
+                }
+                if (!sender) {
+                    sender = { name: 'Guest', pfp: presets[0] };
+                }
+                
                 const mockChatMsg = {
                     type: 'CHAT',
                     senderId: senderId,
-                    senderName: senderName,
-                    senderPfp: senderPfp,
+                    senderName: sender.name,
+                    senderPfp: sender.pfp,
                     songTimestamp: songTimestamp,
                     text: `__IMAGE__:${fullBase64}`
                 };
@@ -630,7 +706,7 @@
             if (!event || !event.type) return;
 
             // Reset host activity timer on receiving host communication
-            if (event.senderId === 'HOST' || event.role === 'Host' || event.type === 'JOIN_RESPONSE' || event.type === 'PLAYBACK_CMD') {
+            if (event.senderId === 'HOST' || event.role === 'Host' || event.type === 'JOIN_RESPONSE' || event.type === 'PLAYBACK_CMD' || event.type === 'HEARTBEAT' || event.type === 'HOST_LEAVE') {
                 lastHostActiveTime = Date.now();
                 const offlineOverlay = document.getElementById('offline-overlay');
                 if (offlineOverlay && offlineOverlay.style.display !== 'none') {
@@ -654,6 +730,7 @@
                             
                             // Initialize track sync
                             role = event.role || 'Listener';
+                            updateRoleUI();
                             if (event.videoId && player) {
                                 hostVideoId = event.videoId;
                                 lastHostPosition = event.position;
@@ -668,6 +745,9 @@
                                 if (event.isPlaying) player.playVideo();
                                 else player.pauseVideo();
                                 setTimeout(() => { isSyncing = false; }, 1000);
+                            }
+                            if (event.title && event.artist) {
+                                fetchLyrics(event.title, event.artist);
                             }
                             
                             document.getElementById('chat-log').innerHTML = '<div style="font-size:11px;color:#059669;text-align:center;">Joined live session successfully!</div>';
@@ -704,6 +784,7 @@
                         role = event.newRole;
                         document.getElementById('status-span').textContent = 'Connected (' + event.newRole + ')';
                         appendSystemMessage(`Your role was changed to ${event.newRole}`);
+                        updateRoleUI();
                     }
                     break;
 
@@ -715,7 +796,7 @@
                     break;
 
                 case 'PLAYBACK_CMD':
-                    if (player && !isSyncing) {
+                    if (player) {
                         executePlayback(event);
                     }
                     break;
@@ -729,6 +810,14 @@
                 case 'CHAT_IMG_CHUNK':
                     if (sessionActive && event.senderId !== myId) {
                         handleImageChunk(event);
+                    }
+                    break;
+
+                case 'HOST_LEAVE':
+                    if (sessionActive) {
+                        console.warn("[Offline Check] Host explicitly left the session.");
+                        const offlineOverlay = document.getElementById('offline-overlay');
+                        if (offlineOverlay) offlineOverlay.style.display = 'flex';
                     }
                     break;
             }
@@ -756,6 +845,9 @@
                         videoId: cmd.videoId,
                         startSeconds: lastHostPosition
                     });
+                    if (cmd.title && cmd.artist) {
+                        fetchLyrics(cmd.title, cmd.artist);
+                    }
                 }
             } else if (cmd.action === 'play') {
                 lastHostPosition = cmd.position;
@@ -850,7 +942,7 @@
 
         function sendImageChunks(dataUrl) {
             const txId = Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
-            const chunkSize = 3000;
+            const chunkSize = 1000;
             const totalChunks = Math.ceil(dataUrl.length / chunkSize);
             
             console.log(`[Image Transfer] Sending ${dataUrl.length} chars in ${totalChunks} chunks (txId: ${txId})`);
@@ -877,8 +969,6 @@
                     total: totalChunks,
                     chunk: chunkStr,
                     senderId: myId,
-                    senderName: myName,
-                    senderPfp: selectedPfp,
                     songTimestamp: timeStr
                 };
                 
@@ -1022,12 +1112,53 @@
             if (changed) renderRosterBar();
         }, 5000);
 
-        // Periodic Watch-along Auto-Sync loop (runs every 2 seconds)
+        // Periodic Watch-along Auto-Sync loop (runs every 500 milliseconds)
         setInterval(() => {
             if (!player || typeof player.getCurrentTime !== 'function' || !player.getPlayerState) return;
-            if (isSyncing || role === 'Player') return; // Don't enforce if actively syncing or if the user is promoted to a Player
 
             const state = player.getPlayerState();
+            const myTime = player.getCurrentTime();
+            
+            // Highlight lyrics
+            updateLyricsHighlight(myTime);
+
+            // Update player controls UI
+            const duration = player.getDuration();
+            const slider = document.getElementById('ctrl-seek-slider');
+            const currentTimeLabel = document.getElementById('ctrl-time-current');
+            const totalTimeLabel = document.getElementById('ctrl-time-total');
+            if (slider && !isUserSeeking && duration > 0) {
+                slider.max = duration;
+                slider.value = myTime;
+                currentTimeLabel.textContent = formatTime(myTime);
+                totalTimeLabel.textContent = formatTime(duration);
+            }
+
+            if (isSyncing || role === 'Player') return; // Don't enforce sync if actively syncing or if the user is promoted to a Player
+
+            // Video ID mismatch check
+            let myVideoId = '';
+            if (typeof player.getVideoData === 'function') {
+                const data = player.getVideoData();
+                if (data) myVideoId = data.video_id;
+            }
+
+            const elapsed = (Date.now() - lastHostPositionTimestamp) / 1000;
+            const estimatedTime = lastHostPosition + (lastHostIsPlaying ? elapsed : 0);
+
+            if (hostVideoId && myVideoId && myVideoId !== hostVideoId) {
+                console.log(`[Auto-Sync] Video mismatch (mine: ${myVideoId}, host: ${hostVideoId}). Loading host video.`);
+                isSyncing = true;
+                player.loadVideoById({
+                    videoId: hostVideoId,
+                    startSeconds: estimatedTime
+                });
+                if (lastHostIsPlaying) player.playVideo();
+                else player.pauseVideo();
+                setTimeout(() => { isSyncing = false; }, 1000);
+                return;
+            }
+
             if (state === YT.PlayerState.UNSTARTED || state === YT.PlayerState.BUFFERING) return;
 
             // Detect if YouTube is playing an ad
@@ -1040,11 +1171,7 @@
             }
             if (isAd) return; // Wait for ad to finish playing
 
-            const elapsed = (Date.now() - lastHostPositionTimestamp) / 1000;
-            const estimatedTime = lastHostPosition + (lastHostIsPlaying ? elapsed : 0);
-            const myTime = player.getCurrentTime();
             const isMyPlaying = state === YT.PlayerState.PLAYING;
-
             const diff = Math.abs(myTime - estimatedTime);
             if (lastHostIsPlaying) {
                 if (diff > 2.5) {
@@ -1073,6 +1200,400 @@
                 }
             }
         }, 500);
+
+        // --- Tab controls & Sync Lyrics functions ---
+        const tabLyrics = document.getElementById('tab-lyrics');
+        const tabControls = document.getElementById('tab-controls');
+        const lyricsTabContent = document.getElementById('lyrics-tab-content');
+        const controlsTabContent = document.getElementById('controls-tab-content');
+
+        tabLyrics.onclick = () => {
+            tabLyrics.style.color = '#fff';
+            tabLyrics.style.borderBottom = '2px solid var(--accent)';
+            tabControls.style.color = '#888';
+            tabControls.style.borderBottom = 'none';
+            lyricsTabContent.style.display = 'flex';
+            controlsTabContent.style.display = 'none';
+        };
+
+        tabControls.onclick = () => {
+            tabControls.style.color = '#fff';
+            tabControls.style.borderBottom = '2px solid var(--accent)';
+            tabLyrics.style.color = '#888';
+            tabLyrics.style.borderBottom = 'none';
+            controlsTabContent.style.display = 'flex';
+            lyricsTabContent.style.display = 'none';
+        };
+
+        function updateRoleUI() {
+            const hasControl = (role === 'Player');
+            if (hasControl) {
+                document.getElementById('tab-controls').style.display = 'block';
+            } else {
+                document.getElementById('tab-controls').style.display = 'none';
+                tabLyrics.click();
+            }
+        }
+
+        function formatTime(secs) {
+            if (isNaN(secs) || secs < 0) return '0:00';
+            const m = Math.floor(secs / 60);
+            const r = Math.floor(secs % 60);
+            return m + ':' + (r < 10 ? '0' : '') + r;
+        }
+
+        function publishPlayback(action, extraParams = {}) {
+            if (!sessionActive || role !== 'Player') return;
+            publish({
+                type: 'PLAYBACK_CMD',
+                action: action,
+                senderId: myId,
+                ...extraParams
+            });
+        }
+
+        // Setup Controls UI Handlers
+        document.getElementById('ctrl-play').onclick = () => {
+            publishPlayback('play', { position: player.getCurrentTime() });
+        };
+        document.getElementById('ctrl-pause').onclick = () => {
+            publishPlayback('pause');
+        };
+        document.getElementById('ctrl-back').onclick = () => {
+            const current = player.getCurrentTime();
+            publishPlayback('seek', { position: Math.max(0, current - 10) });
+        };
+        document.getElementById('ctrl-skip').onclick = () => {
+            const current = player.getCurrentTime();
+            publishPlayback('seek', { position: current + 10 });
+        };
+
+        const seekSlider = document.getElementById('ctrl-seek-slider');
+        seekSlider.oninput = () => {
+            isUserSeeking = true;
+            document.getElementById('ctrl-time-current').textContent = formatTime(seekSlider.value);
+        };
+        seekSlider.onchange = () => {
+            publishPlayback('seek', { position: parseFloat(seekSlider.value) });
+            isUserSeeking = false;
+        };
+
+        document.getElementById('ctrl-search-btn').onclick = triggerSearch;
+        document.getElementById('ctrl-search-input').onkeydown = (e) => {
+            if (e.key === 'Enter') triggerSearch();
+        };
+
+        function triggerSearch() {
+            const input = document.getElementById('ctrl-search-input');
+            const query = input.value.trim();
+            if (!query) return;
+
+            // Check if YouTube URL
+            let videoId = '';
+            if (query.includes('youtube.com') || query.includes('youtu.be')) {
+                try {
+                    if (query.includes('youtu.be/')) {
+                        videoId = query.split('youtu.be/')[1].split(/[?#&]/)[0];
+                    } else {
+                        const urlParams = new URL(query).searchParams;
+                        videoId = urlParams.get('v') || '';
+                    }
+                } catch (e) {
+                    const match = query.match(/[?&]v=([^&#]+)/);
+                    videoId = match ? match[1] : '';
+                }
+            }
+
+            if (videoId) {
+                publishPlayback('track-change', { videoId: videoId, position: 0, isPlaying: true });
+                input.value = '';
+                document.getElementById('search-results').innerHTML = '<div style="font-size:11px;color:#059669;padding:6px;text-align:center;">Playing URL...</div>';
+                return;
+            }
+
+            searchYouTube(query);
+        }
+
+        async function searchYouTube(query) {
+            const resultsContainer = document.getElementById('search-results');
+            resultsContainer.innerHTML = '<div style="font-size:12px;color:#888;text-align:center;padding:10px;">Searching...</div>';
+
+            const apis = [
+                'https://pipedapi.kavin.rocks',
+                'https://pipedapi.privacydev.net',
+                'https://pipedapi.col2.gg'
+            ];
+
+            let data = null;
+            for (const api of apis) {
+                try {
+                    const response = await fetch(`${api}/search?q=${encodeURIComponent(query)}&filter=music_songs`);
+                    if (response.ok) {
+                        data = await response.json();
+                        break;
+                    }
+                } catch (e) {
+                    console.warn(`Failed Piped API search:`, e);
+                }
+            }
+
+            if (!data || !data.items || data.items.length === 0) {
+                for (const api of apis) {
+                    try {
+                        const response = await fetch(`${api}/search?q=${encodeURIComponent(query)}`);
+                        if (response.ok) {
+                            data = await response.json();
+                            break;
+                        }
+                    } catch (e) {
+                        console.warn(`Failed fallback Piped API search:`, e);
+                    }
+                }
+            }
+
+            if (data && data.items && data.items.length > 0) {
+                renderSearchResults(data.items);
+            } else {
+                resultsContainer.innerHTML = '<div style="font-size:12px;color:#888;text-align:center;padding:10px;">No results found.</div>';
+            }
+        }
+
+        function renderSearchResults(items) {
+            const resultsContainer = document.getElementById('search-results');
+            resultsContainer.innerHTML = '';
+
+            const streams = items.filter(item => item.type === 'stream' || item.type === 'video');
+            if (streams.length === 0) {
+                resultsContainer.innerHTML = '<div style="font-size:12px;color:#888;text-align:center;padding:10px;">No playable results found.</div>';
+                return;
+            }
+
+            streams.slice(0, 5).forEach(item => {
+                const videoId = item.url.split('v=')[1] || item.videoId;
+                if (!videoId) return;
+
+                const row = document.createElement('div');
+                row.style.display = 'flex';
+                row.style.alignItems = 'center';
+                row.style.gap = '10px';
+                row.style.padding = '6px';
+                row.style.borderBottom = '1px solid rgba(255,255,255,0.03)';
+                row.style.cursor = 'pointer';
+                row.style.transition = 'background 0.2s';
+                row.onmouseover = () => { row.style.background = 'rgba(255,255,255,0.05)'; };
+                row.onmouseout = () => { row.style.background = 'none'; };
+                row.onclick = () => {
+                    publishPlayback('track-change', { videoId: videoId, position: 0, isPlaying: true });
+                    document.getElementById('ctrl-search-input').value = '';
+                    resultsContainer.innerHTML = '';
+                };
+
+                const thumbnail = document.createElement('img');
+                thumbnail.src = item.thumbnail;
+                thumbnail.style.width = '40px';
+                thumbnail.style.height = '30px';
+                thumbnail.style.objectFit = 'cover';
+                thumbnail.style.borderRadius = '4px';
+
+                const textCol = document.createElement('div');
+                textCol.style.display = 'flex';
+                textCol.style.flexDirection = 'column';
+                textCol.style.flex = '1';
+                textCol.style.overflow = 'hidden';
+
+                const titleSpan = document.createElement('span');
+                titleSpan.textContent = item.title;
+                titleSpan.style.fontSize = '12px';
+                titleSpan.style.fontWeight = '500';
+                titleSpan.style.color = '#fff';
+                titleSpan.style.whiteSpace = 'nowrap';
+                titleSpan.style.overflow = 'hidden';
+                titleSpan.style.textOverflow = 'ellipsis';
+
+                const uploaderSpan = document.createElement('span');
+                uploaderSpan.textContent = item.uploaderName || item.author || 'Unknown Artist';
+                uploaderSpan.style.fontSize = '10px';
+                uploaderSpan.style.color = '#888';
+
+                textCol.appendChild(titleSpan);
+                textCol.appendChild(uploaderSpan);
+                row.appendChild(thumbnail);
+                row.appendChild(textCol);
+                resultsContainer.appendChild(row);
+            });
+        }
+
+        // --- Synced Lyrics Parser & Highlight ---
+        function parseLrc(lrcText) {
+            if (!lrcText) return [];
+            const lines = lrcText.split('\n');
+            const result = [];
+            const timeReg = /\[(\d+):(\d+)(?:[.:](\d+))?\]/g;
+            
+            for (const line of lines) {
+                const timestamps = [];
+                let match;
+                timeReg.lastIndex = 0;
+                
+                let lastTimeIndex = 0;
+                while ((match = timeReg.exec(line)) !== null) {
+                    const min = parseInt(match[1], 10);
+                    const sec = parseInt(match[2], 10);
+                    const ms = match[3] ? parseInt(match[3], 10) : 0;
+                    
+                    let msOffset = 0;
+                    if (match[3]) {
+                        if (match[3].length === 1) msOffset = ms * 0.1;
+                        else if (match[3].length === 2) msOffset = ms * 0.01;
+                        else if (match[3].length === 3) msOffset = ms * 0.001;
+                    }
+                    
+                    const timeInSeconds = min * 60 + sec + msOffset;
+                    timestamps.push(timeInSeconds);
+                    lastTimeIndex = timeReg.lastIndex;
+                }
+                
+                if (timestamps.length > 0) {
+                    const text = line.substring(lastTimeIndex).trim();
+                    for (const time of timestamps) {
+                        result.push({ time, text });
+                    }
+                }
+            }
+            
+            result.sort((a, b) => a.time - b.time);
+            return result;
+        }
+
+        async function fetchLyrics(title, artist) {
+            const container = document.getElementById('lyrics-content');
+            const sourceSpan = document.getElementById('lyrics-source');
+            container.innerHTML = '<div style="color: #888;">Loading lyrics...</div>';
+            container.style.justifyContent = 'center';
+            currentLrc = [];
+            isSyncedLyrics = false;
+            lastActiveLyricLine = -1;
+
+            if (!title || !artist) {
+                container.innerHTML = '<div style="color: #888;">No track metadata available</div>';
+                return;
+            }
+
+            try {
+                let url = `https://lrclib.net/api/get?track_name=${encodeURIComponent(title)}&artist_name=${encodeURIComponent(artist)}`;
+                let response = await fetch(url);
+                let data = null;
+                
+                if (response.ok) {
+                    data = await response.json();
+                } else {
+                    const query = `${title} ${artist}`;
+                    const searchUrl = `https://lrclib.net/api/search?q=${encodeURIComponent(query)}`;
+                    const searchRes = await fetch(searchUrl);
+                    if (searchRes.ok) {
+                        const results = await searchRes.json();
+                        if (Array.isArray(results) && results.length > 0) {
+                            data = results[0];
+                        }
+                    }
+                }
+
+                if (data) {
+                    if (data.syncedLyrics) {
+                        currentLrc = parseLrc(data.syncedLyrics);
+                        isSyncedLyrics = true;
+                        sourceSpan.textContent = 'LRCLIB (Synced)';
+                        renderSyncedLyrics();
+                    } else if (data.plainLyrics) {
+                        sourceSpan.textContent = 'LRCLIB (Plain)';
+                        container.style.justifyContent = 'flex-start';
+                        container.innerHTML = `<div style="white-space: pre-wrap; color: #ccc; text-align: center; width: 100%; padding: 0 10px;">${data.plainLyrics}</div>`;
+                    } else {
+                        sourceSpan.textContent = 'LRCLIB';
+                        container.innerHTML = '<div style="color: #888;">No lyrics found for this song.</div>';
+                    }
+                } else {
+                    sourceSpan.textContent = 'LRCLIB';
+                    container.innerHTML = '<div style="color: #888;">No lyrics found for this song.</div>';
+                }
+            } catch (e) {
+                console.error("fetchLyrics error:", e);
+                container.innerHTML = '<div style="color: #888;">Failed to load lyrics.</div>';
+            }
+        }
+
+        function renderSyncedLyrics() {
+            const container = document.getElementById('lyrics-content');
+            container.innerHTML = '';
+            container.style.justifyContent = 'flex-start';
+            
+            const topSpacer = document.createElement('div');
+            topSpacer.style.height = '40%';
+            container.appendChild(topSpacer);
+
+            currentLrc.forEach((line, index) => {
+                const el = document.createElement('div');
+                el.className = 'lyric-line';
+                el.id = `lyric-line-${index}`;
+                el.textContent = line.text || '• • •';
+                container.appendChild(el);
+            });
+
+            const bottomSpacer = document.createElement('div');
+            bottomSpacer.style.height = '40%';
+            container.appendChild(bottomSpacer);
+        }
+
+        function updateLyricsHighlight(time) {
+            if (!isSyncedLyrics || currentLrc.length === 0) return;
+            
+            let activeIndex = -1;
+            for (let i = 0; i < currentLrc.length; i++) {
+                if (currentLrc[i].time <= time) {
+                    activeIndex = i;
+                } else {
+                    break;
+                }
+            }
+
+            if (activeIndex !== lastActiveLyricLine) {
+                if (lastActiveLyricLine !== -1) {
+                    const oldEl = document.getElementById(`lyric-line-${lastActiveLyricLine}`);
+                    if (oldEl) {
+                        oldEl.classList.remove('active');
+                    }
+                }
+
+                if (activeIndex !== -1) {
+                    const newEl = document.getElementById(`lyric-line-${activeIndex}`);
+                    if (newEl) {
+                        newEl.classList.add('active');
+                        
+                        const container = document.getElementById('lyrics-content');
+                        const containerHeight = container.clientHeight;
+                        const lineTop = newEl.offsetTop;
+                        const linePercentHeight = newEl.clientHeight / 2;
+                        
+                        container.scrollTop = lineTop - (containerHeight / 2) + linePercentHeight;
+                    }
+                }
+                lastActiveLyricLine = activeIndex;
+            }
+        }
+
+        window.addEventListener('beforeunload', () => {
+            if (sessionActive) {
+                fetch(`https://ntfy.sh/ytmnative-sync-${sessionId}`, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        type: 'LEAVE',
+                        guestId: myId,
+                        guestName: myName
+                    }),
+                    keepalive: true
+                }).catch(() => {});
+            }
+        });
 
         // Host Active/Offline check loop (runs every 3 seconds)
         setInterval(() => {
